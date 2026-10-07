@@ -1,0 +1,8 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="inventory management system with POS.csproj" Id="8ba7e3a3-8bfb-4980-931a-0c08e78a3793">
+    <Platform Project="x86" />
+  </Project>
+</Solution>
