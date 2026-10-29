@@ -1,25 +1,22 @@
 ﻿using System;
 using System.Configuration;
 using System.Data;
+using System.Security.Cryptography;
 using System.Windows.Forms;
 using MySql.Data.MySqlClient;
 
-namespace inventory_management_system_with_POS {
-    public class MySQL_Dataabase {
+namespace inventory_management_system_with_POS
+{
+    public class MySQL_Dataabase
+    {
         public MySqlConnection conn = new MySqlConnection();
         public MySqlCommand cmd;
         public MySqlDataReader dr;
 
-       
+
         private static bool _schemaChecked;
 
-        // ------------------------------------------------------------
-        // Optional app.config keys (inside <appSettings>):
-        //   DbServer, DbName, DbUser, DbPassword
-        // DbPassword may be plain text or an "enc:v1:..." value made
-        // with the Security Tools screen. Missing keys fall back to the
-        // original defaults so the app keeps working without changes.
-        // ------------------------------------------------------------
+      
         private static string Setting(string key, string fallback)
         {
             string value = ConfigurationManager.AppSettings[key];
@@ -27,13 +24,18 @@ namespace inventory_management_system_with_POS {
             return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
         }
 
-        private static string BuildConnectionString()
+        public static string BuildConnectionString()
         {
             string password = Setting("DbPassword", "123456789");
 
             if (DataEncryptor.IsEncrypted(password))
             {
                 password = DataEncryptor.Decrypt(password);
+            }
+            else
+            {
+                // Plain text found in app.config: protect it for next time.
+                EncryptPasswordInConfig(password);
             }
 
             MySqlConnectionStringBuilder builder = new MySqlConnectionStringBuilder();
@@ -43,6 +45,37 @@ namespace inventory_management_system_with_POS {
             builder.Password = password;
 
             return builder.ConnectionString;
+        }
+
+        // Replaces the plain DbPassword in the .exe.config with its encrypted
+        // form. Does nothing if the key is not in the file (the built-in
+        // default is never written). Any failure is ignored: the app still
+        // connects using the plain value.
+        private static void EncryptPasswordInConfig(string plainPassword)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(ConfigurationManager.AppSettings["DbPassword"]))
+                {
+                    return;
+                }
+
+                Configuration cfg = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
+                KeyValueConfigurationElement item = cfg.AppSettings.Settings["DbPassword"];
+
+                if (item == null)
+                {
+                    return;
+                }
+
+                item.Value = DataEncryptor.Encrypt(plainPassword);
+                cfg.Save(ConfigurationSaveMode.Modified);
+                ConfigurationManager.RefreshSection("appSettings");
+            }
+            catch (Exception)
+            {
+                // No write permission or similar: keep working with the plain value.
+            }
         }
 
         public void ConnectToDataBase()
@@ -56,6 +89,17 @@ namespace inventory_management_system_with_POS {
                 }
 
                 EnsurePasswordColumn();
+            }
+            catch (CryptographicException ex)
+            {
+                MessageBox.Show(
+                    "The saved database password cannot be read on this PC / Windows user.\n\n" +
+                    "Open the .exe.config file, set DbPassword to the plain password, and start the program again.\n\n" +
+                    ex.Message,
+                    "Database Password Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
             }
             catch (Exception ex)
             {

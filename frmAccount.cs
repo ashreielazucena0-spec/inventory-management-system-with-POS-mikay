@@ -200,7 +200,7 @@ namespace inventory_management_system_with_POS
                 {
                     createAccount.EditMode = true;   // UPDATE instead of INSERT
 
-                    createAccount.txtAccID.Text = accId;
+                    createAccount.AccId = accId;
                     createAccount.txtAccName.Text = accName;
                     createAccount.cbAccountType.Text = accType;
                     createAccount.textUsername.Text = username;

@@ -1,664 +1,1239 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
-using System.Globalization;
-using System.Text;
+using System.Drawing;
+using System.Drawing.Printing;
 using System.Windows.Forms;
 using MySql.Data.MySqlClient;
 
 namespace inventory_management_system_with_POS
 {
-    // Point of Sale  ->  tbl_sale, tbl_sale_item, tbl_stock_movement
-    //
-    // Control map (names come from the designer):
-    //   textBox1   invoice no (next sale_id, read only)
-    //   comboBox1  payment type (tbl_sale.payment_method)
-    //   textBox2   barcode        - press Enter to add the product
-    //   textBox7   product name   - press Enter to add (auto-complete from tbl_product)
-    //   dataGridView1  cart: Qty | Product name | Price | Discount | Total
-    //                  Qty and Discount can be edited. Delete key removes a line.
-    //   textBox3   amount due (read only)      label8  net total
-    //   textBox4   sale discount (tbl_sale.discount_amount)
-    //   textBox5   cash received               textBox6  change (read only)
-    //   button2 Cancel   button3 Save   button4 Print receipt
-    public partial class FrmSales : Form
+    // ===================== FrmPOS =====================
+    public partial class FrmPOS : Form
     {
-        private const string Peso = "\u20B1";
+        // Set once from frmMainform:  FrmPOS.DefaultConnection = _db.conn;
+        public static MySqlConnection DefaultConnection { get; set; }
 
-        private Timer timer;
-        private bool _busy;                       // stops cell-change events from calling themselves
-        private string _lastReceipt = "";
-        private readonly Dictionary<string, int> _stockById = new Dictionary<string, int>();
+        // Philippine VAT rate (prices in the database are treated as VAT-INCLUSIVE)
+        private const decimal VatRate = 0.12m;
 
-        public FrmSales()
+        private MySqlConnection _conn;
+        private bool _layoutReady;
+
+        // found automatically from your Designer layout (no renaming needed)
+        private TextBoxBase txtSearchProduct;
+        private TextBoxBase txtSearchOrder;
+        private TextBoxBase txtCashTendered;
+
+        private Button btnAddTo;
+        private Button btnRemove;
+        private Button btnClear;
+        private Button btnSeniorCitizen;
+        private Button btnPayAndPrint;
+
+        private Label lblProductHeader;
+        private Label lblOrderHeader;
+        private Label lblCashCaption;
+
+        // created in code, shown beside Cash Tendered
+        private Label lblSubtotal;
+        private Label lblDiscount;
+        private Label lblVat;
+        private Label lblTotal;
+        private Label lblChange;
+
+        private bool _seniorOn;
+        private decimal _subtotal;      // sum of the item prices (VAT included)
+        private decimal _discount;      // senior citizen 20% discount
+        private decimal _vatable;       // VATable sales (price without VAT)
+        private decimal _vat;           // 12% VAT contained in the total
+        private decimal _vatExempt;     // VAT-exempt sales (senior citizen)
+        private decimal _vatRemoved;    // VAT taken off because of VAT exemption
+        private decimal _total;
+        private List<string> _receiptLines = new List<string>();
+
+        private class OrderLine
+        {
+            public string ProductId;
+            public string Name;
+            public decimal Price;
+            public int Qty;
+            public decimal Total;
+        }
+
+        public FrmPOS()
         {
             InitializeComponent();
+            _conn = DefaultConnection;
+
+            Load += (s, e) => SetupPos();
+            Resize += (s, e) => ArrangeLayout();
         }
 
-        private void FrmSales_Load(object sender, EventArgs e)
+        // Optional: pass the connection directly -> new FrmPOS(_db.conn)
+        public FrmPOS(MySqlConnection conn) : this()
         {
-            // Clock
-            timer = new Timer();
-            timer.Interval = 1000;
-            timer.Tick += Timer_Tick;
-            timer.Start();
-            UpdateDateTime();
+            if (conn != null)
+            {
+                _conn = conn;
+            }
+        }
 
-            // Payment types (tbl_sale.payment_method)
-            comboBox1.DropDownStyle = ComboBoxStyle.DropDownList;
-            comboBox1.Items.Clear();
-            comboBox1.Items.Add("Cash");
-            comboBox1.Items.Add("Check");
-            comboBox1.Items.Add("Card");
-            comboBox1.SelectedIndex = 0;
+        // ---- handlers created by your Designer (keep them) ----
+        private void label1_Click(object sender, EventArgs e)
+        {
+        }
 
-            label4.Text = "Amount due";
-            textBox1.ReadOnly = true;
-            textBox3.ReadOnly = true;
-            textBox6.ReadOnly = true;
+        private void FrmPOS_Load(object sender, EventArgs e)
+        {
+        }
 
-            // Cart grid: only Qty (0) and Discount (3) can be typed in.
+        private void maskedTextBox1_MaskInputRejected(object sender, MaskInputRejectedEventArgs e)
+        {
+        }
+
+        private void dataGridView1_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+        }
+
+        private void dataGridView2_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        {
+        }
+
+        // ---------------------------------------------------------
+        // SETUP
+        // ---------------------------------------------------------
+        private void SetupPos()
+        {
+            SetupGrids();
+            FindDesignerControls();
+            CreateTotalLabels();
+            WireEvents();
+            PinControls();
+
+            _layoutReady = true;
+            ArrangeLayout();
+            RecalculateTotals();
+
+            if (_conn == null)
+            {
+                MessageBox.Show(
+                    "No database connection was given to this form.\n\n" +
+                    "In frmMainform add this line after the database is ready:\n" +
+                    "FrmPOS.DefaultConnection = _db.conn;",
+                    "Prime Mart Pos", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            LoadProducts("");
+        }
+
+        private void SetupGrids()
+        {
+            // dataGridView1 = PRODUCT LIST
+            dataGridView1.Columns.Clear();
+            dataGridView1.Columns.Add("ProductId", "ProductId");
+            dataGridView1.Columns.Add("Barcode", "Barcode");
+            dataGridView1.Columns.Add("Product", "Product");
+            dataGridView1.Columns.Add("Price", "Price");
+            dataGridView1.Columns.Add("Stocks", "Stocks");
+
             dataGridView1.AllowUserToAddRows = false;
             dataGridView1.AllowUserToDeleteRows = false;
-            dataGridView1.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            dataGridView1.ReadOnly = true;
             dataGridView1.MultiSelect = false;
-            dataGridView1.Columns[0].ReadOnly = false;
-            dataGridView1.Columns[1].ReadOnly = true;
-            dataGridView1.Columns[2].ReadOnly = true;
-            dataGridView1.Columns[3].ReadOnly = false;
-            dataGridView1.Columns[4].ReadOnly = true;
-            dataGridView1.Columns[2].DefaultCellStyle.Format = "N2";
-            dataGridView1.Columns[3].DefaultCellStyle.Format = "N2";
-            dataGridView1.Columns[4].DefaultCellStyle.Format = "N2";
+            dataGridView1.RowHeadersVisible = false;
+            dataGridView1.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            dataGridView1.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
 
-            textBox2.KeyDown += textBox2_KeyDown;
-            textBox7.KeyDown += textBox7_KeyDown;
-            textBox4.TextChanged += AmountsChanged;
-            textBox5.TextChanged += AmountsChanged;
-            dataGridView1.CellEndEdit += dataGridView1_CellEndEdit;
-            dataGridView1.KeyDown += dataGridView1_KeyDown;
-            button2.Click += button2_Click;
+            dataGridView1.Columns["ProductId"].Visible = false;
+            dataGridView1.Columns["Barcode"].FillWeight = 80;
+            dataGridView1.Columns["Product"].FillWeight = 500;
+            dataGridView1.Columns["Price"].FillWeight = 80;
+            dataGridView1.Columns["Stocks"].FillWeight = 80;
+            dataGridView1.Columns["Price"].DefaultCellStyle.Format = "N2";
 
-            try
+            // dataGridView2 = CURRENT ORDER
+            dataGridView2.Columns.Clear();
+            dataGridView2.Columns.Add("ProductId", "ProductId");
+            dataGridView2.Columns.Add("Stock", "Stock");
+            dataGridView2.Columns.Add("Product", "Product");
+            dataGridView2.Columns.Add("Price", "Price");
+            dataGridView2.Columns.Add("Qty", "Qty");
+            dataGridView2.Columns.Add("Total", "Total");
+
+            dataGridView2.AllowUserToAddRows = false;
+            dataGridView2.AllowUserToDeleteRows = false;
+            dataGridView2.MultiSelect = false;
+            dataGridView2.RowHeadersVisible = false;
+            dataGridView2.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            dataGridView2.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+
+            dataGridView2.Columns["ProductId"].Visible = false;
+            dataGridView2.Columns["Stock"].Visible = false;
+            dataGridView2.Columns["Product"].FillWeight = 200;
+            dataGridView2.Columns["Price"].FillWeight = 80;
+            dataGridView2.Columns["Qty"].FillWeight = 50;
+            dataGridView2.Columns["Total"].FillWeight = 90;
+            dataGridView2.Columns["Price"].DefaultCellStyle.Format = "N2";
+            dataGridView2.Columns["Total"].DefaultCellStyle.Format = "N2";
+
+            // only the Qty column can be typed in
+            dataGridView2.ReadOnly = false;
+            foreach (DataGridViewColumn col in dataGridView2.Columns)
             {
-                InventoryData.EnsureDefaults();
-
-                AutoCompleteStringCollection names = new AutoCompleteStringCollection();
-                names.AddRange(InventoryData.GetActiveProductNames().ToArray());
-
-                textBox7.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
-                textBox7.AutoCompleteSource = AutoCompleteSource.CustomSource;
-                textBox7.AutoCompleteCustomSource = names;
-
-                textBox1.Text = InventoryData.PeekNextSaleId();
+                col.ReadOnly = col.Name != "Qty";
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show(ex.Message, "Database error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-
-            RecalculateTotals();
-            textBox2.Focus();
         }
 
-        // ------------------------------------------------------------
-        // Clock
-        // ------------------------------------------------------------
-        private void Timer_Tick(object sender, EventArgs e)
+        private IEnumerable<Control> AllControls(Control root)
         {
-            UpdateDateTime();
-        }
-
-        private void UpdateDateTime()
-        {
-            label9.Text = DateTime.Now.ToString("MMMM dd, yyyy");
-            label10.Text = DateTime.Now.ToString("hh:mm:ss tt");
-        }
-
-        protected override void OnFormClosed(FormClosedEventArgs e)
-        {
-            if (timer != null)
+            foreach (Control c in root.Controls)
             {
-                timer.Stop();
-                timer.Dispose();
-            }
+                yield return c;
 
-            base.OnFormClosed(e);
-        }
-
-        // ------------------------------------------------------------
-        // Adding products
-        // ------------------------------------------------------------
-        private void textBox2_KeyDown(object sender, KeyEventArgs e)
-        {
-            if (e.KeyCode != Keys.Enter)
-            {
-                return;
-            }
-
-            e.SuppressKeyPress = true;
-
-            string code = textBox2.Text.Trim();
-
-            if (code.Length == 0)
-            {
-                return;
-            }
-
-            try
-            {
-                DataRow product = InventoryData.FindProductByCode(code);
-
-                if (product == null)
+                foreach (Control child in AllControls(c))
                 {
-                    MessageBox.Show("No active product with barcode / ID \"" + code + "\".",
-                        "Not found", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    textBox2.SelectAll();
-                    return;
+                    yield return child;
+                }
+            }
+        }
+
+        private Button FindButton(string text)
+        {
+            foreach (Control c in AllControls(this))
+            {
+                Button b = c as Button;
+
+                if (b != null && string.Equals(b.Text.Trim(), text, StringComparison.OrdinalIgnoreCase))
+                {
+                    return b;
+                }
+            }
+
+            return null;
+        }
+
+        private Label FindLabel(string text)
+        {
+            foreach (Control c in AllControls(this))
+            {
+                Label l = c as Label;
+
+                if (l != null && string.Equals(l.Text.Trim(), text, StringComparison.OrdinalIgnoreCase))
+                {
+                    return l;
+                }
+            }
+
+            return null;
+        }
+
+        // Buttons/labels are found by their text, text boxes by their position:
+        // two boxes on top (left = product search, right = order search),
+        // and the lowest box = Cash Tendered.
+        private void FindDesignerControls()
+        {
+            btnAddTo = FindButton("ADD TO");
+            btnRemove = FindButton("REM");
+            btnClear = FindButton("CLEAR");
+            btnSeniorCitizen = FindButton("SENIOR CITIZEN");
+            btnPayAndPrint = FindButton("Pay and Print");
+
+            // show the shortcut keys on the buttons (2 lines so the text always fits)
+            if (btnAddTo != null) btnAddTo.Text = "ADD TO\n[Alt+A]";
+            if (btnRemove != null) btnRemove.Text = "REM\n[Alt+R]";
+            if (btnClear != null) btnClear.Text = "CLEAR\n[Alt+C]";
+            if (btnSeniorCitizen != null) btnSeniorCitizen.Text = "SENIOR CITIZEN\n[Alt+S]";
+            if (btnPayAndPrint != null) btnPayAndPrint.Text = "Pay and Print\n[Alt+P]";
+
+            lblProductHeader = FindLabel("PRODUCT LIST");
+            lblOrderHeader = FindLabel("CURRENT ORDER");
+            lblCashCaption = FindLabel("Cash Tendered");
+
+            List<TextBoxBase> boxes = new List<TextBoxBase>();
+
+            foreach (Control c in AllControls(this))
+            {
+                MaskedTextBox m = c as MaskedTextBox;
+                if (m != null)
+                {
+                    m.Mask = "";   // a mask would block normal typing
                 }
 
-                AddToCart(product);
-                textBox2.Clear();
-                textBox2.Focus();
+                TextBoxBase t = c as TextBoxBase;
+                if (t != null)
+                {
+                    boxes.Add(t);
+                }
             }
-            catch (Exception ex)
+
+            if (boxes.Count >= 3)
             {
-                MessageBox.Show(ex.Message, "Database error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                boxes.Sort((a, b) => a.Top.CompareTo(b.Top));
+                txtCashTendered = boxes[boxes.Count - 1];
+                boxes.RemoveAt(boxes.Count - 1);
+
+                boxes.Sort((a, b) => a.Left.CompareTo(b.Left));
+                txtSearchProduct = boxes[0];
+                txtSearchOrder = boxes[1];
             }
         }
 
-        // Existing handler name from the designer: the text itself needs no code,
-        // the product is added when Enter is pressed.
-        private void textBox7_TextChanged(object sender, EventArgs e) { }
-
-        private void textBox7_KeyDown(object sender, KeyEventArgs e)
+        private Label MakeLabel(Control host, int left, int top, int width, int height, float fontSize, string text)
         {
-            if (e.KeyCode != Keys.Enter)
+            Label lbl = new Label
             {
-                return;
+                Text = text,
+                AutoSize = false,
+                Location = new Point(left, top),
+                Size = new Size(width, height),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Font = new Font("Arial", fontSize, FontStyle.Bold)
+            };
+
+            host.Controls.Add(lbl);
+            return lbl;
+        }
+
+        private void CreateTotalLabels()
+        {
+            if (txtCashTendered == null || txtCashTendered.Parent == null) return;
+
+            Control host = txtCashTendered.Parent;
+
+            // make room beside the cash box
+            txtCashTendered.Width = Math.Min(txtCashTendered.Width, 250);
+            txtCashTendered.Font = new Font("Arial", 12F);
+
+            int top = txtCashTendered.Top;
+            int h = Math.Max(txtCashTendered.Height, 28);
+            int x = txtCashTendered.Right + 15;
+
+            lblSubtotal = MakeLabel(host, x, top, 170, h, 10F, "Subtotal: 0.00");
+            x += 175;
+            lblDiscount = MakeLabel(host, x, top, 170, h, 10F, "Discount: 0.00");
+            x += 175;
+            lblVat = MakeLabel(host, x, top, 200, h, 10F, "VAT 12%: 0.00");
+            x += 205;
+            lblTotal = MakeLabel(host, x, top, 200, h, 12F, "TOTAL: 0.00");
+            x += 205;
+            lblChange = MakeLabel(host, x, top, 200, h, 12F, "Change: 0.00");
+        }
+
+        private static void Pin(Control c)
+        {
+            if (c != null)
+            {
+                c.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            }
+        }
+
+        // we position everything ourselves, so remove designer anchors
+        private void PinControls()
+        {
+            Pin(dataGridView1);
+            Pin(dataGridView2);
+            Pin(txtSearchProduct);
+            Pin(txtSearchOrder);
+            Pin(txtCashTendered);
+            Pin(btnAddTo);
+            Pin(btnRemove);
+            Pin(btnClear);
+            Pin(btnSeniorCitizen);
+            Pin(btnPayAndPrint);
+            Pin(lblProductHeader);
+            Pin(lblOrderHeader);
+            Pin(lblCashCaption);
+            Pin(lblSubtotal);
+            Pin(lblDiscount);
+            Pin(lblVat);
+            Pin(lblTotal);
+            Pin(lblChange);
+        }
+
+        // Fits everything inside the window, so nothing is cut off
+        private void ArrangeLayout()
+        {
+            if (!_layoutReady) return;
+
+            int margin = 10;
+            int gap = 7;
+            int availableWidth = ClientSize.Width - margin * 2 - gap;
+            if (availableWidth < 300) return;
+
+            int leftWidth = (int)(availableWidth * 0.62);
+            int rightWidth = availableWidth - leftWidth;
+            int rightX = margin + leftWidth + gap;
+
+            if (txtSearchProduct != null)
+            {
+                txtSearchProduct.Left = margin;
+                txtSearchProduct.Width = leftWidth;
             }
 
-            e.SuppressKeyPress = true;
-
-            string name = textBox7.Text.Trim();
-
-            if (name.Length == 0)
+            if (txtSearchOrder != null)
             {
-                return;
+                txtSearchOrder.Left = rightX;
+                txtSearchOrder.Width = rightWidth;
             }
+
+            if (lblProductHeader != null)
+            {
+                lblProductHeader.Left = margin;
+                lblProductHeader.Width = leftWidth;
+            }
+
+            if (lblOrderHeader != null)
+            {
+                lblOrderHeader.Left = rightX;
+                lblOrderHeader.Width = rightWidth;
+            }
+
+            int gridTop = dataGridView1.Top;
+            int btnH = btnAddTo != null ? btnAddTo.Height : 47;
+            int rowH = txtCashTendered != null ? Math.Max(txtCashTendered.Height, 28) : 30;
+            int footer = 15 + btnH + 12 + rowH + 15;
+            int gridHeight = Math.Max(120, ClientSize.Height - gridTop - footer);
+
+            dataGridView1.SetBounds(margin, gridTop, leftWidth, gridHeight);
+            dataGridView2.SetBounds(rightX, gridTop, rightWidth, gridHeight);
+
+            int buttonY = gridTop + gridHeight + 15;
+
+            Button[] buttons = { btnAddTo, btnRemove, btnClear, btnSeniorCitizen, btnPayAndPrint };
+            foreach (Button b in buttons)
+            {
+                if (b != null) b.Top = buttonY;
+            }
+
+            int cashY = buttonY + btnH + 12;
+
+            if (txtCashTendered != null)
+            {
+                txtCashTendered.Top = cashY;
+            }
+
+            Control[] rowLabels = { lblCashCaption, lblSubtotal, lblDiscount, lblVat, lblTotal, lblChange };
+            foreach (Control c in rowLabels)
+            {
+                if (c != null) c.Top = cashY + (rowH - c.Height) / 2;
+            }
+        }
+
+        private void WireEvents()
+        {
+            if (btnAddTo != null) btnAddTo.Click += BtnAddTo_Click;
+            if (btnRemove != null) btnRemove.Click += BtnRemove_Click;
+            if (btnClear != null) btnClear.Click += BtnClear_Click;
+            if (btnSeniorCitizen != null) btnSeniorCitizen.Click += BtnSeniorCitizen_Click;
+            if (btnPayAndPrint != null) btnPayAndPrint.Click += BtnPayAndPrint_Click;
+
+            if (txtSearchProduct != null)
+            {
+                txtSearchProduct.TextChanged += (s, e) => LoadProducts(txtSearchProduct.Text.Trim());
+                txtSearchProduct.KeyDown += TxtSearchProduct_KeyDown;
+            }
+
+            if (txtSearchOrder != null)
+            {
+                txtSearchOrder.TextChanged += (s, e) => FilterOrder();
+            }
+
+            if (txtCashTendered != null)
+            {
+                txtCashTendered.TextChanged += (s, e) => UpdateChange();
+                txtCashTendered.KeyPress += TxtCashTendered_KeyPress;
+                txtCashTendered.KeyDown += TxtCashTendered_KeyDown;
+            }
+
+            dataGridView1.CellDoubleClick += (s, e) =>
+            {
+                if (e.RowIndex >= 0)
+                {
+                    AddProductFromRow(dataGridView1.Rows[e.RowIndex]);
+                }
+            };
+
+            dataGridView2.CellEndEdit += DataGridView2_CellEndEdit;
+        }
+
+        // ---------------------------------------------------------
+        // DATABASE
+        // ---------------------------------------------------------
+        private void EnsureConnectionOpen()
+        {
+            if (_conn.State != ConnectionState.Open)
+            {
+                _conn.Open();
+            }
+        }
+
+        private void LoadProducts(string search)
+        {
+            if (_conn == null) return;
 
             try
             {
-                DataRow product = InventoryData.FindProductByName(name);
+                EnsureConnectionOpen();
+                dataGridView1.Rows.Clear();
 
-                if (product == null)
+                using (MySqlCommand cmd = new MySqlCommand(PosSql.SelectProducts, _conn))
                 {
-                    MessageBox.Show("No active product named \"" + name + "\".",
-                        "Not found", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    textBox7.SelectAll();
-                    return;
-                }
+                    cmd.Parameters.AddWithValue("@s", "%" + search + "%");
 
-                AddToCart(product);
-                textBox7.Clear();
-                textBox2.Focus();
+                    using (MySqlDataReader rd = cmd.ExecuteReader())
+                    {
+                        while (rd.Read())
+                        {
+                            dataGridView1.Rows.Add(
+                                Convert.ToString(rd["product_id"]),
+                                Convert.ToString(rd["barcode"]),
+                                Convert.ToString(rd["product_name"]),
+                                Convert.ToDecimal(rd["price"]),
+                                Convert.ToInt32(rd["stock"]));
+                        }
+                    }
+                }
             }
             catch (Exception ex)
             {
-                MessageBox.Show(ex.Message, "Database error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Cannot load products: " + ex.Message,
+                    "MIKMIK POS", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        private void AddToCart(DataRow product)
+        // Looks up the logged-in cashier's acc_id (null if it cannot be found)
+        private object GetCashierId(MySqlTransaction tx)
         {
-            string id = product["product_id"].ToString();
-            string name = product["product_name"].ToString();
-            decimal price = Convert.ToDecimal(product["selling_price"]);
-            int stock = Convert.ToInt32(product["stock"]);
-
-            _stockById[id] = stock;
-
-            // Same product again: raise the quantity.
-            foreach (DataGridViewRow row in dataGridView1.Rows)
+            try
             {
-                if (Convert.ToString(row.Tag) == id)
+                if (string.IsNullOrEmpty(Session.AccountName)) return DBNull.Value;
+
+                using (MySqlCommand cmd = new MySqlCommand(PosSql.FindCashier, _conn, tx))
                 {
-                    int qty = ReadInt(row.Cells[0].Value, 1) + 1;
+                    cmd.Parameters.AddWithValue("@name", Session.AccountName);
+                    object r = cmd.ExecuteScalar();
+                    return r == null ? DBNull.Value : r;
+                }
+            }
+            catch
+            {
+                return DBNull.Value;
+            }
+        }
+
+        private string SaveSale(List<OrderLine> items, decimal cash, decimal change)
+        {
+            EnsureConnectionOpen();
+
+            // tbl_sale.sale_id is text, so we build the number here
+            string saleId = "SL" + DateTime.Now.ToString("yyyyMMddHHmmssfff");
+
+            using (MySqlTransaction tx = _conn.BeginTransaction())
+            {
+                try
+                {
+                    object cashier = GetCashierId(tx);
+
+                    using (MySqlCommand cmd = new MySqlCommand(PosSql.InsertSale, _conn, tx))
+                    {
+                        cmd.Parameters.AddWithValue("@id", saleId);
+                        cmd.Parameters.AddWithValue("@cashier", cashier);
+                        cmd.Parameters.AddWithValue("@subtotal", _subtotal);
+                        cmd.Parameters.AddWithValue("@discount", _discount);
+                        cmd.Parameters.AddWithValue("@tax", _vat);          // 12% VAT contained in the total
+                        cmd.Parameters.AddWithValue("@total", _total);
+                        cmd.Parameters.AddWithValue("@paid", cash);
+                        cmd.Parameters.AddWithValue("@change", change);
+                        cmd.ExecuteNonQuery();
+                    }
+
+                    foreach (OrderLine it in items)
+                    {
+                        // 1) lock the product row so two cashiers cannot sell the same last item
+                        using (MySqlCommand cmd = new MySqlCommand(PosSql.LockProduct, _conn, tx))
+                        {
+                            cmd.Parameters.AddWithValue("@prod", it.ProductId);
+                            cmd.ExecuteScalar();
+                        }
+
+                        // 2) stock = IN movements minus OUT movements
+                        decimal available;
+                        using (MySqlCommand cmd = new MySqlCommand(PosSql.StockOf, _conn, tx))
+                        {
+                            cmd.Parameters.AddWithValue("@prod", it.ProductId);
+                            available = Convert.ToDecimal(cmd.ExecuteScalar());
+                        }
+
+                        if (available < it.Qty)
+                        {
+                            throw new InvalidOperationException(
+                                "Not enough stock for " + it.Name + ". Available: " + available.ToString("0"));
+                        }
+
+                        // 3) sale item row
+                        using (MySqlCommand cmd = new MySqlCommand(PosSql.InsertSaleItem, _conn, tx))
+                        {
+                            cmd.Parameters.AddWithValue("@sale", saleId);
+                            cmd.Parameters.AddWithValue("@prod", it.ProductId);
+                            cmd.Parameters.AddWithValue("@qty", it.Qty);
+                            cmd.Parameters.AddWithValue("@price", it.Price);
+                            cmd.Parameters.AddWithValue("@total", it.Total);
+                            cmd.ExecuteNonQuery();
+                        }
+
+                        // 4) take the stock out (an OUT movement is how this database lowers stock)
+                        using (MySqlCommand cmd = new MySqlCommand(PosSql.InsertMovement, _conn, tx))
+                        {
+                            cmd.Parameters.AddWithValue("@prod", it.ProductId);
+                            cmd.Parameters.AddWithValue("@qty", it.Qty);
+                            cmd.Parameters.AddWithValue("@sale", saleId);
+                            cmd.Parameters.AddWithValue("@cashier", cashier);
+                            cmd.ExecuteNonQuery();
+                        }
+                    }
+
+                    tx.Commit();
+                    return saleId;
+                }
+                catch
+                {
+                    tx.Rollback();
+                    throw;
+                }
+            }
+        }
+
+        // ---------------------------------------------------------
+        // ORDER LOGIC
+        // ---------------------------------------------------------
+        private void AddProductFromRow(DataGridViewRow row)
+        {
+            try
+            {
+                string id = Convert.ToString(row.Cells["ProductId"].Value);
+                string name = Convert.ToString(row.Cells["Product"].Value);
+                decimal price = Convert.ToDecimal(row.Cells["Price"].Value);
+                int stock = Convert.ToInt32(row.Cells["Stocks"].Value);
+
+                AddToOrder(id, name, price, stock);
+            }
+            catch
+            {
+                MessageBox.Show("Invalid product information.", "MIKMIK POS",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+
+        private void AddToOrder(string id, string name, decimal price, int stock)
+        {
+            if (stock < 1)
+            {
+                MessageBox.Show(name + " is out of stock.", "MIKMIK POS",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            foreach (DataGridViewRow r in dataGridView2.Rows)
+            {
+                if (Convert.ToString(r.Cells["ProductId"].Value) == id)
+                {
+                    int qty = Convert.ToInt32(r.Cells["Qty"].Value) + 1;
 
                     if (qty > stock)
                     {
-                        MessageBox.Show("Only " + stock + " of \"" + name + "\" in stock.",
-                            "Not enough stock", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        MessageBox.Show("Not enough stock for " + name +
+                            ". Available: " + stock, "MIKMIK POS",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         return;
                     }
 
-                    row.Cells[0].Value = qty;
-                    RecalculateRow(row);
+                    r.Cells["Qty"].Value = qty;
+                    r.Cells["Total"].Value = price * qty;
                     RecalculateTotals();
                     return;
                 }
             }
 
-            if (stock <= 0)
+            dataGridView2.Rows.Add(id, stock, name, price, 1, price);
+            RecalculateTotals();
+        }
+
+        // Prices are VAT-INCLUSIVE.
+        //   Regular sale : VATable sales = subtotal / 1.12,  VAT = subtotal - VATable sales
+        //   Senior sale  : VAT-exempt, so the VAT is taken off first, then 20% off the price without VAT
+        private void RecalculateTotals()
+        {
+            decimal sub = 0m;
+
+            foreach (DataGridViewRow r in dataGridView2.Rows)
             {
-                MessageBox.Show("\"" + name + "\" is out of stock.",
-                    "Not enough stock", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                sub += Convert.ToDecimal(r.Cells["Total"].Value);
             }
 
-            _busy = true;
+            decimal withoutVat = Math.Round(sub / (1m + VatRate), 2);
+            decimal vatPart = sub - withoutVat;
 
-            int index = dataGridView1.Rows.Add(1, name, price, 0m, price);
-            dataGridView1.Rows[index].Tag = id;
+            _subtotal = sub;
 
-            _busy = false;
+            if (_seniorOn)
+            {
+                _vatable = 0m;
+                _vat = 0m;
+                _vatExempt = withoutVat;
+                _vatRemoved = vatPart;
+                _discount = Math.Round(withoutVat * 0.20m, 2);
+                _total = withoutVat - _discount;
+            }
+            else
+            {
+                _vatable = withoutVat;
+                _vat = vatPart;
+                _vatExempt = 0m;
+                _vatRemoved = 0m;
+                _discount = 0m;
+                _total = sub;
+            }
+
+            if (lblSubtotal != null) lblSubtotal.Text = "Subtotal: " + _subtotal.ToString("N2");
+            if (lblDiscount != null) lblDiscount.Text = "Discount: " + _discount.ToString("N2");
+            if (lblVat != null)
+            {
+                lblVat.Text = _seniorOn
+                    ? "VAT 12%: EXEMPT"
+                    : "VAT 12%: " + _vat.ToString("N2");
+            }
+            if (lblTotal != null) lblTotal.Text = "TOTAL: " + _total.ToString("N2");
+
+            UpdateChange();
+        }
+
+        private bool TryGetCash(out decimal cash)
+        {
+            cash = 0m;
+
+            if (txtCashTendered == null) return false;
+
+            return decimal.TryParse(txtCashTendered.Text.Trim(), out cash);
+        }
+
+        private void UpdateChange()
+        {
+            if (lblChange == null) return;
+
+            decimal cash;
+
+            if (TryGetCash(out cash) && _total > 0 && cash >= _total)
+            {
+                lblChange.Text = "Change: " + (cash - _total).ToString("N2");
+            }
+            else
+            {
+                lblChange.Text = "Change: 0.00";
+            }
+        }
+
+        private void FilterOrder()
+        {
+            string t = txtSearchOrder.Text.Trim().ToLower();
+            dataGridView2.CurrentCell = null;
+
+            foreach (DataGridViewRow r in dataGridView2.Rows)
+            {
+                r.Visible = t.Length == 0 ||
+                    Convert.ToString(r.Cells["Product"].Value).ToLower().Contains(t);
+            }
+        }
+
+        private void SetSenior(bool on)
+        {
+            _seniorOn = on;
+
+            if (btnSeniorCitizen != null)
+            {
+                btnSeniorCitizen.Text = on ? "SENIOR: ON 20%\n[Alt+S]" : "SENIOR CITIZEN\n[Alt+S]";
+                btnSeniorCitizen.BackColor = on ? Color.Orange : Color.SandyBrown;
+            }
 
             RecalculateTotals();
         }
 
-        // ------------------------------------------------------------
-        // Cart editing
-        // ------------------------------------------------------------
-        private static int ReadInt(object value, int fallback)
+        private void ResetOrder()
         {
-            int n;
+            dataGridView2.Rows.Clear();
 
-            if (value != null && int.TryParse(Convert.ToString(value).Trim(), out n))
-            {
-                return n;
-            }
+            if (txtCashTendered != null) txtCashTendered.Clear();
+            if (txtSearchOrder != null) txtSearchOrder.Clear();
 
-            return fallback;
+            SetSenior(false);
         }
 
-        private static decimal ReadMoney(object value, decimal fallback)
+        // ---------------------------------------------------------
+        // EVENTS
+        // ---------------------------------------------------------
+        private void TxtSearchProduct_KeyDown(object sender, KeyEventArgs e)
         {
-            decimal d;
+            // Press Enter (barcode scanners send Enter) to add the product
+            if (e.KeyCode != Keys.Enter) return;
+            e.SuppressKeyPress = true;
 
-            if (value is decimal)
+            string code = txtSearchProduct.Text.Trim();
+            if (code.Length == 0) return;
+
+            DataGridViewRow match = null;
+
+            foreach (DataGridViewRow r in dataGridView1.Rows)
             {
-                return (decimal)value;
-            }
-
-            string text = Convert.ToString(value);
-
-            if (text != null)
-            {
-                text = text.Replace(Peso, "").Replace(",", "").Trim();
-
-                if (decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out d))
+                if (string.Equals(Convert.ToString(r.Cells["Barcode"].Value), code,
+                    StringComparison.OrdinalIgnoreCase))
                 {
-                    return d;
+                    match = r;
+                    break;
                 }
             }
 
-            return fallback;
+            if (match == null && dataGridView1.Rows.Count == 1)
+            {
+                match = dataGridView1.Rows[0];
+            }
+
+            if (match == null && dataGridView1.CurrentRow != null)
+            {
+                match = dataGridView1.CurrentRow;
+            }
+
+            if (match != null)
+            {
+                AddProductFromRow(match);
+                txtSearchProduct.Clear();
+            }
         }
 
-        // Makes Qty / Discount valid and refreshes the line total.
-        private void RecalculateRow(DataGridViewRow row)
+        private void TxtCashTendered_KeyPress(object sender, KeyPressEventArgs e)
         {
-            string id = Convert.ToString(row.Tag);
-            int stock;
-
-            if (!_stockById.TryGetValue(id, out stock))
+            if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar) && e.KeyChar != '.')
             {
-                stock = int.MaxValue;
-            }
-
-            int qty = ReadInt(row.Cells[0].Value, 1);
-
-            if (qty < 1)
-            {
-                qty = 1;
-            }
-
-            if (qty > stock)
-            {
-                MessageBox.Show("Only " + stock + " in stock.", "Not enough stock",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                qty = stock;
-            }
-
-            decimal price = ReadMoney(row.Cells[2].Value, 0m);
-            decimal discount = ReadMoney(row.Cells[3].Value, 0m);
-
-            if (discount < 0)
-            {
-                discount = 0;
-            }
-
-            if (discount > qty * price)
-            {
-                discount = qty * price;
-            }
-
-            _busy = true;
-            row.Cells[0].Value = qty;
-            row.Cells[3].Value = discount;
-            row.Cells[4].Value = qty * price - discount;
-            _busy = false;
-        }
-
-        private void dataGridView1_CellEndEdit(object sender, DataGridViewCellEventArgs e)
-        {
-            if (_busy || e.RowIndex < 0)
-            {
-                return;
-            }
-
-            RecalculateRow(dataGridView1.Rows[e.RowIndex]);
-            RecalculateTotals();
-        }
-
-        private void dataGridView1_KeyDown(object sender, KeyEventArgs e)
-        {
-            if (e.KeyCode == Keys.Delete &&
-                !dataGridView1.IsCurrentCellInEditMode &&
-                dataGridView1.CurrentRow != null)
-            {
-                dataGridView1.Rows.Remove(dataGridView1.CurrentRow);
-                RecalculateTotals();
                 e.Handled = true;
             }
         }
 
-        // ------------------------------------------------------------
-        // Totals
-        // ------------------------------------------------------------
-        private void AmountsChanged(object sender, EventArgs e)
+        private void TxtCashTendered_KeyDown(object sender, KeyEventArgs e)
         {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                BtnPayAndPrint_Click(sender, EventArgs.Empty);
+            }
+        }
+
+        private void DataGridView2_CellEndEdit(object sender, DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || dataGridView2.Columns[e.ColumnIndex].Name != "Qty") return;
+
+            DataGridViewRow r = dataGridView2.Rows[e.RowIndex];
+            int stock = Convert.ToInt32(r.Cells["Stock"].Value);
+            decimal price = Convert.ToDecimal(r.Cells["Price"].Value);
+            int qty;
+
+            if (!int.TryParse(Convert.ToString(r.Cells["Qty"].Value), out qty) || qty < 1)
+            {
+                MessageBox.Show("Quantity must be a whole number of 1 or more.",
+                    "MIKMIK POS", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                qty = 1;
+            }
+            else if (qty > stock)
+            {
+                MessageBox.Show("Only " + stock + " in stock.", "MIKMIK POS",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                qty = stock;
+            }
+
+            r.Cells["Qty"].Value = qty;
+            r.Cells["Total"].Value = price * qty;
             RecalculateTotals();
         }
 
-        private void comboBox1_SelectedIndexChanged(object sender, EventArgs e)
+        // ---------------------------------------------------------
+        // BUTTONS
+        // ---------------------------------------------------------
+        private void BtnAddTo_Click(object sender, EventArgs e)
         {
-            RecalculateTotals();
-        }
-
-        private decimal GetSubtotal()
-        {
-            decimal subtotal = 0;
-
-            foreach (DataGridViewRow row in dataGridView1.Rows)
+            if (dataGridView1.CurrentRow == null)
             {
-                subtotal += ReadMoney(row.Cells[4].Value, 0m);
-            }
-
-            return subtotal;
-        }
-
-        private decimal GetSaleDiscount(decimal subtotal)
-        {
-            decimal discount = ReadMoney(textBox4.Text, 0m);
-
-            if (discount < 0)
-            {
-                discount = 0;
-            }
-
-            if (discount > subtotal)
-            {
-                discount = subtotal;
-            }
-
-            return discount;
-        }
-
-        private bool IsCash()
-        {
-            return comboBox1.SelectedIndex <= 0;
-        }
-
-        private void RecalculateTotals()
-        {
-            decimal subtotal = GetSubtotal();
-            decimal discount = GetSaleDiscount(subtotal);
-            decimal tax = Math.Round((subtotal - discount) * InventoryData.TaxRate, 2);
-            decimal total = subtotal - discount + tax;
-
-            label8.Text = Peso + total.ToString("N2");
-            textBox3.Text = total.ToString("N2");
-            label3.Visible = dataGridView1.Rows.Count == 0;
-
-            if (IsCash())
-            {
-                textBox5.Enabled = true;
-
-                decimal received = ReadMoney(textBox5.Text, 0m);
-                textBox6.Text = received >= total ? (received - total).ToString("N2") : "0.00";
-            }
-            else
-            {
-                // Card / check: exactly the amount due is paid.
-                textBox5.Enabled = false;
-                textBox6.Text = "0.00";
-            }
-        }
-
-        // ------------------------------------------------------------
-        // Cancel / Save / Print
-        // ------------------------------------------------------------
-        private void ClearSale()
-        {
-            dataGridView1.Rows.Clear();
-            _stockById.Clear();
-            textBox2.Clear();
-            textBox7.Clear();
-            textBox4.Clear();
-            textBox5.Clear();
-            textBox6.Clear();
-            comboBox1.SelectedIndex = 0;
-
-            RecalculateTotals();
-            textBox2.Focus();
-        }
-
-        // Cancel
-        private void button2_Click(object sender, EventArgs e)
-        {
-            if (dataGridView1.Rows.Count > 0)
-            {
-                DialogResult answer = MessageBox.Show(
-                    "Cancel this sale and clear the cart?",
-                    "Cancel sale",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Question);
-
-                if (answer != DialogResult.Yes)
-                {
-                    return;
-                }
-            }
-
-            ClearSale();
-        }
-
-        // Save
-        private void button3_Click(object sender, EventArgs e)
-        {
-            if (dataGridView1.IsCurrentCellInEditMode)
-            {
-                dataGridView1.EndEdit();
-            }
-
-            if (dataGridView1.Rows.Count == 0)
-            {
-                MessageBox.Show("Add at least one product first.", "Empty cart",
+                MessageBox.Show("Please select a product.", "MIKMIK POS",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
-                textBox2.Focus();
                 return;
             }
 
-            List<CartLine> lines = new List<CartLine>();
+            AddProductFromRow(dataGridView1.CurrentRow);
+        }
 
-            foreach (DataGridViewRow row in dataGridView1.Rows)
+        private void BtnRemove_Click(object sender, EventArgs e)
+        {
+            if (dataGridView2.CurrentRow == null)
             {
-                CartLine line = new CartLine();
-                line.ProductId = Convert.ToString(row.Tag);
-                line.ProductName = Convert.ToString(row.Cells[1].Value);
-                line.Quantity = ReadInt(row.Cells[0].Value, 1);
-                line.UnitPrice = ReadMoney(row.Cells[2].Value, 0m);
-                line.LineDiscount = ReadMoney(row.Cells[3].Value, 0m);
-                lines.Add(line);
+                MessageBox.Show("Please select an item in the current order.",
+                    "MIKMIK POS", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
             }
 
-            decimal subtotal = 0;
+            dataGridView2.Rows.Remove(dataGridView2.CurrentRow);
+            RecalculateTotals();
+        }
 
-            foreach (CartLine line in lines)
+        private void BtnClear_Click(object sender, EventArgs e)
+        {
+            if (dataGridView2.Rows.Count > 0)
             {
-                subtotal += line.LineTotal;
+                DialogResult ans = MessageBox.Show("Clear the whole order?", "MIKMIK POS",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+                if (ans != DialogResult.Yes) return;
             }
 
-            decimal discount = GetSaleDiscount(subtotal);
-            decimal tax = Math.Round((subtotal - discount) * InventoryData.TaxRate, 2);
-            decimal total = subtotal - discount + tax;
+            ResetOrder();
+        }
 
-            decimal paid;
-            decimal change;
-            string method = Convert.ToString(comboBox1.SelectedItem);
+        private void BtnSeniorCitizen_Click(object sender, EventArgs e)
+        {
+            SetSenior(!_seniorOn);
+        }
 
-            if (IsCash())
+        private void BtnPayAndPrint_Click(object sender, EventArgs e)
+        {
+            dataGridView2.EndEdit();
+
+            if (_conn == null)
             {
-                paid = ReadMoney(textBox5.Text, 0m);
+                MessageBox.Show("No database connection.", "MIKMIK POS",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
 
-                if (paid < total)
+            if (dataGridView2.Rows.Count == 0)
+            {
+                MessageBox.Show("The order is empty.", "MIKMIK POS",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            decimal cash;
+
+            if (!TryGetCash(out cash))
+            {
+                MessageBox.Show("Please enter a valid cash amount.", "MIKMIK POS",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                if (txtCashTendered != null) txtCashTendered.Focus();
+                return;
+            }
+
+            if (cash < _total)
+            {
+                MessageBox.Show("Cash tendered is less than the total.", "MIKMIK POS",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                txtCashTendered.Focus();
+                return;
+            }
+
+            decimal change = cash - _total;
+
+            List<OrderLine> items = new List<OrderLine>();
+
+            foreach (DataGridViewRow r in dataGridView2.Rows)
+            {
+                items.Add(new OrderLine
                 {
-                    MessageBox.Show("Cash received is less than the amount due (" + Peso + total.ToString("N2") + ").",
-                        "Payment", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    textBox5.Focus();
-                    return;
-                }
+                    ProductId = Convert.ToString(r.Cells["ProductId"].Value),
+                    Name = Convert.ToString(r.Cells["Product"].Value),
+                    Price = Convert.ToDecimal(r.Cells["Price"].Value),
+                    Qty = Convert.ToInt32(r.Cells["Qty"].Value),
+                    Total = Convert.ToDecimal(r.Cells["Total"].Value)
+                });
+            }
 
-                change = paid - total;
-            }
-            else
-            {
-                paid = total;
-                change = 0;
-            }
+            string saleId;
 
             try
             {
-                string saleId = InventoryData.SaveSale(
-                    lines, subtotal, discount, tax, total, paid, change, method);
-
-                _lastReceipt = BuildReceipt(saleId, lines, subtotal, discount, tax, total, paid, change, method);
-
-                MessageBox.Show(
-                    "Sale " + saleId + " saved." + (change > 0 ? "\nChange: " + Peso + change.ToString("N2") : ""),
-                    "Success",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-
-                ClearSale();
-                textBox1.Text = InventoryData.PeekNextSaleId();
+                saleId = SaveSale(items, cash, change);
             }
-            catch (InvalidOperationException ex)
+            catch (Exception ex)
             {
-                // e.g. someone else sold the last item in the meantime.
-                MessageBox.Show(ex.Message, "Sale not saved", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-            catch (MySqlException ex)
-            {
-                MessageBox.Show(ex.Message, "Database error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        // Print receipt (of the last saved sale)
-        private void button4_Click(object sender, EventArgs e)
-        {
-            if (_lastReceipt.Length == 0)
-            {
-                MessageBox.Show("Save a sale first, then print its receipt.", "Receipt",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("The sale was NOT saved.\n\n" + ex.Message,
+                    "MIKMIK POS", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
-            using (frmReceiptDialog dlg = new frmReceiptDialog(_lastReceipt))
+            PrintReceipt(saleId, items, cash, change);
+
+            ResetOrder();
+            LoadProducts(txtSearchProduct != null ? txtSearchProduct.Text.Trim() : "");
+        }
+
+        // ---------------------------------------------------------
+        // SHORTCUT KEYS (letters, hold Alt)
+        //   Alt+F = find / scan product      Alt+A = add selected product
+        //   Alt+R = remove selected item     Alt+C = clear order
+        //   Alt+S = senior citizen on/off    Alt+T = cash tendered
+        //   Alt+Q = edit qty of selected     Alt+P = pay and print
+        //   Up/Down (in search box) = move in product list
+        //   Delete (in order list)  = remove selected item
+        //   Esc = clear the search box
+        // Alt is used so the letters never get typed into the search box.
+        // ---------------------------------------------------------
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (!_layoutReady) return base.ProcessCmdKey(ref msg, keyData);
+
+            switch (keyData)
             {
-                dlg.ShowDialog(this);
+                case Keys.Alt | Keys.F:
+                    if (txtSearchProduct != null)
+                    {
+                        txtSearchProduct.Focus();
+                        txtSearchProduct.SelectAll();
+                    }
+                    return true;
+
+                case Keys.Alt | Keys.A:
+                    BtnAddTo_Click(this, EventArgs.Empty);
+                    return true;
+
+                case Keys.Alt | Keys.R:
+                    BtnRemove_Click(this, EventArgs.Empty);
+                    return true;
+
+                case Keys.Alt | Keys.C:
+                    BtnClear_Click(this, EventArgs.Empty);
+                    return true;
+
+                case Keys.Alt | Keys.S:
+                    SetSenior(!_seniorOn);
+                    return true;
+
+                case Keys.Alt | Keys.T:
+                    if (txtCashTendered != null)
+                    {
+                        txtCashTendered.Focus();
+                        txtCashTendered.SelectAll();
+                    }
+                    return true;
+
+                case Keys.Alt | Keys.Q:
+                    if (dataGridView2.CurrentRow != null)
+                    {
+                        dataGridView2.Focus();
+                        dataGridView2.CurrentCell = dataGridView2.CurrentRow.Cells["Qty"];
+                        dataGridView2.BeginEdit(true);
+                    }
+                    return true;
+
+                case Keys.Alt | Keys.P:
+                    BtnPayAndPrint_Click(this, EventArgs.Empty);
+                    return true;
+
+                case Keys.Escape:
+                    if (txtSearchProduct != null)
+                    {
+                        txtSearchProduct.Clear();
+                        txtSearchProduct.Focus();
+                    }
+                    return true;
+
+                case Keys.Down:
+                case Keys.Up:
+                    if (txtSearchProduct != null && txtSearchProduct.Focused)
+                    {
+                        MoveProductSelection(keyData == Keys.Down ? 1 : -1);
+                        return true;
+                    }
+                    break;
+
+                case Keys.Delete:
+                    if (dataGridView2.Focused && !dataGridView2.IsCurrentCellInEditMode)
+                    {
+                        BtnRemove_Click(this, EventArgs.Empty);
+                        return true;
+                    }
+                    break;
+            }
+
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        private void MoveProductSelection(int step)
+        {
+            if (dataGridView1.Rows.Count == 0) return;
+
+            int index = dataGridView1.CurrentRow != null ? dataGridView1.CurrentRow.Index : -1;
+            index = Math.Max(0, Math.Min(dataGridView1.Rows.Count - 1, index + step));
+
+            dataGridView1.ClearSelection();
+            dataGridView1.Rows[index].Selected = true;
+            dataGridView1.CurrentCell = dataGridView1.Rows[index].Cells["Product"];
+        }
+
+        // ---------------------------------------------------------
+        // RECEIPT
+        // ---------------------------------------------------------
+        private void PrintReceipt(string saleId, List<OrderLine> items, decimal cash, decimal change)
+        {
+            _receiptLines = BuildReceipt(saleId, items, cash, change);
+
+            try
+            {
+                using (PrintDocument doc = new PrintDocument())
+                {
+                    doc.PrintPage += Doc_PrintPage;
+
+                    using (PrintPreviewDialog preview = new PrintPreviewDialog())
+                    {
+                        preview.Document = doc;
+                        preview.Width = 520;
+                        preview.Height = 700;
+                        preview.ShowDialog(this);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("The sale was saved, but the receipt could not be printed.\n\n" + ex.Message,
+                    "MIKMIK POS", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 
-        private string BuildReceipt(
-            string saleId, List<CartLine> lines, decimal subtotal, decimal discount,
-            decimal tax, decimal total, decimal paid, decimal change, string method)
+        private List<string> BuildReceipt(string saleId, List<OrderLine> items, decimal cash, decimal change)
         {
-            const int width = 38;
-            StringBuilder sb = new StringBuilder();
+            const int W = 40;
+            List<string> lines = new List<string>();
 
-            sb.AppendLine(Center(label13.Text.Trim(), width));
-            sb.AppendLine(new string('-', width));
-            sb.AppendLine("Receipt : " + saleId);
-            sb.AppendLine("Date    : " + DateTime.Now.ToString("yyyy-MM-dd hh:mm tt"));
-            sb.AppendLine("Cashier : " + Session.AccountName);
-            sb.AppendLine(new string('-', width));
+            lines.Add(CenterText("MIKMIK", W));
+            lines.Add(CenterText("SALES RECEIPT", W));
+            lines.Add("Receipt #: " + saleId);
+            lines.Add("Date: " + DateTime.Now.ToString("MMM dd, yyyy hh:mm tt"));
+            lines.Add(new string('-', W));
 
-            foreach (CartLine line in lines)
+            foreach (OrderLine it in items)
             {
-                string name = line.ProductName.Length > width ? line.ProductName.Substring(0, width) : line.ProductName;
-                sb.AppendLine(name);
-                sb.AppendLine(Row(
-                    "  " + line.Quantity + " x " + line.UnitPrice.ToString("N2"),
-                    line.LineTotal.ToString("N2"), width));
+                lines.Add(it.Name.Length > W ? it.Name.Substring(0, W) : it.Name);
+                lines.Add(TwoColumns("  " + it.Qty + " x " + it.Price.ToString("N2"),
+                    it.Total.ToString("N2"), W));
+            }
 
-                if (line.LineDiscount > 0)
+            lines.Add(new string('-', W));
+            lines.Add(TwoColumns("Subtotal", _subtotal.ToString("N2"), W));
+
+            if (_seniorOn)
+            {
+                lines.Add(TwoColumns("Less: VAT 12%", "-" + _vatRemoved.ToString("N2"), W));
+                lines.Add(TwoColumns("Senior Citizen 20%", "-" + _discount.ToString("N2"), W));
+            }
+
+            lines.Add(TwoColumns("TOTAL", _total.ToString("N2"), W));
+            lines.Add(TwoColumns("Cash", cash.ToString("N2"), W));
+            lines.Add(TwoColumns("Change", change.ToString("N2"), W));
+            lines.Add(new string('-', W));
+
+            // VAT breakdown
+            if (_seniorOn)
+            {
+                lines.Add(TwoColumns("VATable Sales", "0.00", W));
+                lines.Add(TwoColumns("VAT-Exempt Sales", _vatExempt.ToString("N2"), W));
+                lines.Add(TwoColumns("VAT (12%)", "0.00", W));
+            }
+            else
+            {
+                lines.Add(TwoColumns("VATable Sales", _vatable.ToString("N2"), W));
+                lines.Add(TwoColumns("VAT-Exempt Sales", "0.00", W));
+                lines.Add(TwoColumns("VAT (12%)", _vat.ToString("N2"), W));
+            }
+
+            lines.Add(new string('-', W));
+            lines.Add(CenterText("Thank you! Come again.", W));
+
+            return lines;
+        }
+
+        private static string CenterText(string s, int width)
+        {
+            if (s.Length >= width) return s;
+            return new string(' ', (width - s.Length) / 2) + s;
+        }
+
+        private static string TwoColumns(string left, string right, int width)
+        {
+            int maxLeft = width - right.Length - 1;
+            if (left.Length > maxLeft) left = left.Substring(0, maxLeft);
+            return left.PadRight(width - right.Length) + right;
+        }
+
+        private void Doc_PrintPage(object sender, PrintPageEventArgs e)
+        {
+            using (Font font = new Font("Courier New", 9F))
+            {
+                float lineHeight = font.GetHeight(e.Graphics) + 2;
+                float y = e.MarginBounds.Top;
+
+                foreach (string line in _receiptLines)
                 {
-                    sb.AppendLine(Row("  discount", "-" + line.LineDiscount.ToString("N2"), width));
+                    e.Graphics.DrawString(line, font, Brushes.Black, e.MarginBounds.Left, y);
+                    y += lineHeight;
                 }
             }
 
-            sb.AppendLine(new string('-', width));
-            sb.AppendLine(Row("Subtotal", subtotal.ToString("N2"), width));
-
-            if (discount > 0)
-            {
-                sb.AppendLine(Row("Discount", "-" + discount.ToString("N2"), width));
-            }
-
-            if (tax > 0)
-            {
-                sb.AppendLine(Row("Tax", tax.ToString("N2"), width));
-            }
-
-            sb.AppendLine(Row("TOTAL", total.ToString("N2"), width));
-            sb.AppendLine(Row(method, paid.ToString("N2"), width));
-            sb.AppendLine(Row("Change", change.ToString("N2"), width));
-            sb.AppendLine(new string('-', width));
-            sb.AppendLine(Center("Thank you!", width));
-
-            return sb.ToString();
+            e.HasMorePages = false;
         }
 
-        private static string Center(string text, int width)
+        private void label3_Click(object sender, EventArgs e)
         {
-            if (text.Length >= width)
-            {
-                return text;
-            }
 
-            return new string(' ', (width - text.Length) / 2) + text;
         }
 
-        private static string Row(string left, string right, int width)
+        private void button5_Click(object sender, EventArgs e)
         {
-            int gap = width - left.Length - right.Length;
 
-            if (gap < 1)
-            {
-                gap = 1;
-            }
-
-            return left + new string(' ', gap) + right;
         }
+    }
 
-        // ------------------------------------------------------------
-        // Handlers still referenced by the designer (no action needed)
-        // ------------------------------------------------------------
-        private void label2_Click(object sender, EventArgs e) { }
-        private void dataGridView1_CellContentClick(object sender, DataGridViewCellEventArgs e) { }
-        private void pictureBox1_Click(object sender, EventArgs e) { }
-        private void timer1_Tick(object sender, EventArgs e) { }
+    // ===================== ALL SQL IN ONE PLACE =====================
+    // Matches inventory_system.sql. Edit column names HERE only.
+    internal static class PosSql
+    {
+        // price = selling_price; stock comes from vw_product_stock (IN minus OUT movements)
+        public const string SelectProducts =
+            "SELECT p.product_id, p.barcode, p.product_name, " +
+            "       p.selling_price AS price, " +
+            "       COALESCE(s.current_quantity, 0) AS stock " +
+            "FROM tbl_product p " +
+            "LEFT JOIN vw_product_stock s ON s.product_id = p.product_id " +
+            "WHERE p.product_status = 'Active' " +
+            "  AND (p.barcode LIKE @s OR p.product_name LIKE @s) " +
+            "ORDER BY p.product_name";
+
+        public const string FindCashier =
+            "SELECT acc_id FROM tbl_account WHERE acc_name = @name LIMIT 1";
+
+        // tax_amount now stores the 12% VAT that is contained in the total
+        public const string InsertSale =
+            "INSERT INTO tbl_sale (sale_id, cashier_id, subtotal, discount_amount, tax_amount, " +
+            "total_amount, amount_paid, change_due, payment_method, sale_status, created_at) " +
+            "VALUES (@id, @cashier, @subtotal, @discount, @tax, @total, @paid, @change, 'Cash', 'Completed', NOW())";
+
+        public const string InsertSaleItem =
+            "INSERT INTO tbl_sale_item (sale_id, product_id, quantity, unit_price, line_discount, line_total) " +
+            "VALUES (@sale, @prod, @qty, @price, 0, @total)";
+
+        public const string LockProduct =
+            "SELECT product_id FROM tbl_product WHERE product_id = @prod FOR UPDATE";
+
+        public const string StockOf =
+            "SELECT COALESCE(SUM(CASE WHEN movement_type = 'IN' THEN quantity ELSE -quantity END), 0) " +
+            "FROM tbl_stock_movement WHERE product_id = @prod";
+
+        public const string InsertMovement =
+            "INSERT INTO tbl_stock_movement " +
+            "(product_id, movement_type, reason, quantity, reference_id, performed_by, remarks, created_at) " +
+            "VALUES (@prod, 'OUT', 'Sale', @qty, @sale, @cashier, 'POS sale', NOW())";
     }
 }

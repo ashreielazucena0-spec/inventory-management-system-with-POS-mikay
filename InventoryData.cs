@@ -174,6 +174,7 @@ namespace inventory_management_system_with_POS
                    p.barcode,
                    p.cost_price,
                    p.selling_price,
+                   p.expiry_date,
                    COALESCE(s.current_quantity, 0) AS stock
             FROM tbl_product p
             INNER JOIN tbl_category c ON c.category_id = p.category_id
@@ -246,9 +247,11 @@ namespace inventory_management_system_with_POS
             return "P" + (last + 1).ToString("D4");
         }
 
+        // With expiry: saved on the product AND the opening stock is booked as
+        // a batch with that expiry date (what frmExpireditem reads).
         public static void InsertProduct(
             string id, string name, string barcode, string categoryId,
-            decimal costPrice, decimal sellingPrice, int openingStock)
+            decimal costPrice, decimal sellingPrice, int openingStock, DateTime? expiry)
         {
             using (MySqlConnection c = OpenConnection())
             using (MySqlTransaction tx = c.BeginTransaction())
@@ -256,9 +259,9 @@ namespace inventory_management_system_with_POS
                 using (MySqlCommand cmd = new MySqlCommand(
                     @"INSERT INTO tbl_product
                         (product_id, product_name, barcode, category_id,
-                         cost_price, selling_price, product_status)
+                         cost_price, selling_price, expiry_date, product_status)
                       VALUES
-                        (@id, @name, @barcode, @cat, @cost, @price, 'Active')", c, tx))
+                        (@id, @name, @barcode, @cat, @cost, @price, @expiry, 'Active')", c, tx))
                 {
                     cmd.Parameters.Add(P("@id", id));
                     cmd.Parameters.Add(P("@name", name.Trim()));
@@ -266,19 +269,64 @@ namespace inventory_management_system_with_POS
                     cmd.Parameters.Add(P("@cat", categoryId));
                     cmd.Parameters.Add(P("@cost", costPrice));
                     cmd.Parameters.Add(P("@price", sellingPrice));
+                    cmd.Parameters.Add(P("@expiry", DateOrNull(expiry)));
                     cmd.ExecuteNonQuery();
                 }
 
                 if (openingStock > 0)
                 {
+                    // A batch number is needed so the expiry can be tracked per batch.
+                    string batch = expiry.HasValue
+                        ? "B" + DateTime.Now.ToString("yyyyMMddHHmmss")
+                        : null;
+
                     InsertMovement(c, tx, id, "IN", "Opening Stock", openingStock,
-                        null, null, costPrice, null, null, null);
+                        batch, expiry, costPrice, null, null, null);
                 }
 
                 tx.Commit();
             }
         }
 
+        // Old signature kept so other forms still compile (no expiry).
+        public static void InsertProduct(
+            string id, string name, string barcode, string categoryId,
+            decimal costPrice, decimal sellingPrice, int openingStock)
+        {
+            InsertProduct(id, name, barcode, categoryId, costPrice, sellingPrice, openingStock, null);
+        }
+
+        // Saves the expiry date on the product. Batches already in
+        // tbl_stock_movement keep their own expiry date; to bring in stock
+        // with a different expiry use Stock In.
+        public static void UpdateProduct(
+            string id, string name, string barcode, string categoryId,
+            decimal costPrice, decimal sellingPrice, DateTime? expiry)
+        {
+            using (MySqlConnection c = OpenConnection())
+            using (MySqlCommand cmd = new MySqlCommand(
+                @"UPDATE tbl_product
+                  SET product_name = @name,
+                      barcode = @barcode,
+                      category_id = @cat,
+                      cost_price = @cost,
+                      selling_price = @price,
+                      expiry_date = @expiry
+                  WHERE product_id = @id", c))
+            {
+                cmd.Parameters.Add(P("@id", id));
+                cmd.Parameters.Add(P("@name", name.Trim()));
+                cmd.Parameters.Add(P("@barcode", TextOrNull(barcode)));
+                cmd.Parameters.Add(P("@cat", categoryId));
+                cmd.Parameters.Add(P("@cost", costPrice));
+                cmd.Parameters.Add(P("@price", sellingPrice));
+                cmd.Parameters.Add(P("@expiry", DateOrNull(expiry)));
+                cmd.ExecuteNonQuery();
+            }
+        }
+
+        // Old signature kept so other forms still compile.
+        // No expiry argument: the product's existing expiry date is left alone.
         public static void UpdateProduct(
             string id, string name, string barcode, string categoryId,
             decimal costPrice, decimal sellingPrice)
@@ -727,39 +775,64 @@ namespace inventory_management_system_with_POS
                 P("@s", "%" + (search ?? "").Trim() + "%"));
         }
 
-        // Batches that still have stock and an expiry date.
-        // days = -1 : only batches that are already expired.
-        // days >= 0 : expired batches plus those expiring within that many days.
+        // Batches that still have stock and an expiry date, PLUS stock that has
+        // no batch but whose product has an expiry date (saved from Manage
+        // Product, e.g. on Update).
+        // days = -1 : only expired.  days >= 0 : expired + expiring within that many days.
         public static DataTable GetExpiringBatches(int days, string search)
         {
             return Query(
-                @"SELECT p.product_id,
-                         p.product_name,
-                         c.category_name,
-                         b.batch_no,
-                         b.expiry_date,
-                         DATEDIFF(b.expiry_date, CURDATE()) AS days_left,
-                         b.remaining,
-                         b.remaining * p.cost_price AS stock_value
+                @"SELECT x.product_id,
+                         x.product_name,
+                         x.category_name,
+                         x.batch_no,
+                         x.expiry_date,
+                         DATEDIFF(x.expiry_date, CURDATE()) AS days_left,
+                         x.remaining,
+                         x.remaining * x.cost_price AS stock_value
                   FROM (
-                        SELECT product_id,
-                               batch_no,
-                               expiry_date,
-                               SUM(CASE WHEN movement_type = 'IN' THEN quantity ELSE -quantity END) AS remaining
-                        FROM tbl_stock_movement
-                        WHERE expiry_date IS NOT NULL
-                        GROUP BY product_id, batch_no, expiry_date
-                        HAVING remaining > 0
-                       ) b
-                  INNER JOIN tbl_product p ON p.product_id = b.product_id
-                  INNER JOIN tbl_category c ON c.category_id = p.category_id
-                  WHERE p.product_status = 'Active'
-                    AND b.expiry_date <= DATE_ADD(CURDATE(), INTERVAL @days DAY)
-                    AND (p.product_id LIKE @s
-                         OR p.product_name LIKE @s
-                         OR c.category_name LIKE @s
-                         OR b.batch_no LIKE @s)
-                  ORDER BY b.expiry_date, p.product_name",
+                        SELECT p.product_id, p.product_name, c.category_name,
+                               p.cost_price, p.product_status,
+                               b.batch_no, b.expiry_date, b.remaining
+                        FROM (
+                              SELECT product_id,
+                                     batch_no,
+                                     expiry_date,
+                                     SUM(CASE WHEN movement_type = 'IN' THEN quantity ELSE -quantity END) AS remaining
+                              FROM tbl_stock_movement
+                              WHERE expiry_date IS NOT NULL
+                              GROUP BY product_id, batch_no, expiry_date
+                              HAVING remaining > 0
+                             ) b
+                        INNER JOIN tbl_product p ON p.product_id = b.product_id
+                        INNER JOIN tbl_category c ON c.category_id = p.category_id
+
+                        UNION ALL
+
+                        SELECT p.product_id, p.product_name, c.category_name,
+                               p.cost_price, p.product_status,
+                               NULL, p.expiry_date, (t.total - t.tracked)
+                        FROM tbl_product p
+                        INNER JOIN tbl_category c ON c.category_id = p.category_id
+                        INNER JOIN (
+                              SELECT product_id,
+                                     SUM(CASE WHEN movement_type = 'IN' THEN quantity ELSE -quantity END) AS total,
+                                     SUM(CASE WHEN expiry_date IS NOT NULL
+                                              THEN (CASE WHEN movement_type = 'IN' THEN quantity ELSE -quantity END)
+                                              ELSE 0 END) AS tracked
+                              FROM tbl_stock_movement
+                              GROUP BY product_id
+                             ) t ON t.product_id = p.product_id
+                        WHERE p.expiry_date IS NOT NULL
+                          AND (t.total - t.tracked) > 0
+                       ) x
+                  WHERE x.product_status = 'Active'
+                    AND x.expiry_date <= DATE_ADD(CURDATE(), INTERVAL @days DAY)
+                    AND (x.product_id LIKE @s
+                         OR x.product_name LIKE @s
+                         OR x.category_name LIKE @s
+                         OR x.batch_no LIKE @s)
+                  ORDER BY x.expiry_date, x.product_name",
                 P("@days", days),
                 P("@s", "%" + (search ?? "").Trim() + "%"));
         }

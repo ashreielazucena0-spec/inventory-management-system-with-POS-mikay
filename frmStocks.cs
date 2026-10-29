@@ -547,5 +547,10 @@ namespace inventory_management_system_with_POS
         // Handlers still referenced by the designer.
         private void button7_Click(object sender, EventArgs e) { }
         private void pictureBox1_Click(object sender, EventArgs e) { }
+
+        private void button15_Click(object sender, EventArgs e)
+        {
+
+        }
     }
 }

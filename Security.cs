@@ -66,8 +66,8 @@ namespace inventory_management_system_with_POS
         /// <summary>Checks a typed password against a stored hash.</summary>
         public static bool Verify(string password, string stored)
         {
-            if (password == null || !IsHashed(stored))
-            {
+            if (password == null || !IsHashed(stored))            {
+
                 return false;
             }
 

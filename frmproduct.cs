@@ -7,21 +7,10 @@ using MySql.Data.MySqlClient;
 
 namespace inventory_management_system_with_POS
 {
-    // Manage Product  ->  tbl_product (+ tbl_category, vw_product_stock)
-    //
-    // Control map (names come from the designer):
-    //   textBox1        search
-    //   maskedTextBox1  product_id   (auto, read only)
-    //   maskedTextBox2  product_name
-    //   comboBox1       category
-    //   maskedTextBox4  barcode      (was "Brand": the schema has no brand column)
-    //   textBox2        selling_price
-    //   txtCost         cost_price   (added in code)
-    //   maskedTextBox6  stock        (opening stock when adding; read only afterwards,
-    //                                 stock changes go through Manage Stocks)
     public partial class frmproduct : Form
     {
         private const string Peso = "\u20B1";
+        private const int ExpiryColumnIndex = 6;   // ID, NAME, CATEGORY, BARCODE, PRICE, STOCKS, EXPIRES
 
         private TextBox txtCost;
         private bool _isNew;
@@ -69,6 +58,12 @@ namespace inventory_management_system_with_POS
 
             maskedTextBox1.ReadOnly = true;
 
+            // Expiry date picker: unchecked means "no expiry".
+            label2.Text = "Expiry date:";
+            dateTimePicker1.Format = DateTimePickerFormat.Short;
+            dateTimePicker1.ShowCheckBox = true;
+            dateTimePicker1.Checked = false;
+
             Label lblCost = new Label();
             lblCost.Text = "Cost price:";
             lblCost.AutoSize = true;
@@ -106,6 +101,12 @@ namespace inventory_management_system_with_POS
             dataGridView1.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             dataGridView1.MultiSelect = false;
             dataGridView1.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+
+            // Extra column for the expiry date.
+            if (!dataGridView1.Columns.Contains("colExpiry"))
+            {
+                dataGridView1.Columns.Add("colExpiry", "EXPIRES");
+            }
         }
 
         // ------------------------------------------------------------
@@ -119,14 +120,26 @@ namespace inventory_management_system_with_POS
 
             foreach (DataRow r in dt.Rows)
             {
-                // Grid order: ID, NAME, CATEGORY, BARCODE, PRICE, STOCKS
+                string expiryText = "";
+                DateTime expiryDate = DateTime.MinValue;
+                bool hasExpiry = dt.Columns.Contains("expiry_date")
+                                 && r["expiry_date"] != DBNull.Value;
+
+                if (hasExpiry)
+                {
+                    expiryDate = Convert.ToDateTime(r["expiry_date"]);
+                    expiryText = expiryDate.ToString("yyyy-MM-dd");
+                }
+
+                // Grid order: ID, NAME, CATEGORY, BARCODE, PRICE, STOCKS, EXPIRES
                 int index = dataGridView1.Rows.Add(
                     r["product_id"].ToString(),
                     r["product_name"].ToString(),
                     r["category_name"].ToString(),
                     r["barcode"] == DBNull.Value ? "" : r["barcode"].ToString(),
                     Convert.ToDecimal(r["selling_price"]).ToString("N2"),
-                    Convert.ToInt32(r["stock"]).ToString());
+                    Convert.ToInt32(r["stock"]).ToString(),
+                    expiryText);
 
                 // Keep the numbers the form needs for editing.
                 dataGridView1.Rows[index].Tag = new string[]
@@ -135,6 +148,19 @@ namespace inventory_management_system_with_POS
                     Convert.ToDecimal(r["cost_price"]).ToString("0.00", CultureInfo.InvariantCulture),
                     Convert.ToDecimal(r["selling_price"]).ToString("0.00", CultureInfo.InvariantCulture)
                 };
+
+                // Red = already expired, orange = expires within 30 days.
+                if (hasExpiry)
+                {
+                    if (expiryDate.Date < DateTime.Today)
+                    {
+                        dataGridView1.Rows[index].DefaultCellStyle.BackColor = Color.LightCoral;
+                    }
+                    else if (expiryDate.Date <= DateTime.Today.AddDays(30))
+                    {
+                        dataGridView1.Rows[index].DefaultCellStyle.BackColor = Color.Orange;
+                    }
+                }
             }
         }
 
@@ -169,6 +195,20 @@ namespace inventory_management_system_with_POS
             maskedTextBox4.Text = Convert.ToString(row.Cells[3].Value);
             maskedTextBox6.Text = Convert.ToString(row.Cells[5].Value);
 
+            // Expiry date
+            string exp = Convert.ToString(row.Cells[ExpiryColumnIndex].Value);
+            DateTime parsed;
+            if (DateTime.TryParse(exp, CultureInfo.InvariantCulture, DateTimeStyles.None, out parsed))
+            {
+                dateTimePicker1.Value = parsed;
+                dateTimePicker1.Checked = true;
+            }
+            else
+            {
+                dateTimePicker1.Value = DateTime.Today;
+                dateTimePicker1.Checked = false;
+            }
+
             if (extra != null)
             {
                 comboBox1.SelectedValue = extra[0];
@@ -194,6 +234,9 @@ namespace inventory_management_system_with_POS
             labelStock.Text = "Opening stock:";
             comboBox1.SelectedIndex = -1;
 
+            dateTimePicker1.Value = DateTime.Today;
+            dateTimePicker1.Checked = false;
+
             dataGridView1.ClearSelection();
             maskedTextBox2.Focus();
         }
@@ -209,6 +252,12 @@ namespace inventory_management_system_with_POS
             {
                 MessageBox.Show(ex.Message, "Database error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        // Returns the chosen expiry date, or null when the picker is unchecked.
+        private DateTime? GetExpiry()
+        {
+            return dateTimePicker1.Checked ? dateTimePicker1.Value.Date : (DateTime?)null;
         }
 
         private bool ReadForm(out decimal cost, out decimal price, out int stock)
@@ -260,6 +309,15 @@ namespace inventory_management_system_with_POS
                 }
             }
 
+            // A new product should not already be expired.
+            if (_isNew && dateTimePicker1.Checked && dateTimePicker1.Value.Date < DateTime.Today)
+            {
+                MessageBox.Show("Expiry date cannot be in the past.", "Invalid date",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                dateTimePicker1.Focus();
+                return false;
+            }
+
             return true;
         }
 
@@ -282,7 +340,8 @@ namespace inventory_management_system_with_POS
         {
             if (!_isNew)
             {
-                MessageBox.Show("Click Add first to enter a new product, or use Update to change the selected one.",
+                MessageBox.Show(
+                    "Click Add first to enter a new product, or use Update to change the selected one.",
                     "Save", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
@@ -291,27 +350,34 @@ namespace inventory_management_system_with_POS
             int stock;
 
             if (!ReadForm(out cost, out price, out stock))
-            {
                 return;
-            }
 
             try
             {
                 InventoryData.InsertProduct(
                     maskedTextBox1.Text.Trim(),
-                    maskedTextBox2.Text,
-                    maskedTextBox4.Text,
+                    maskedTextBox2.Text.Trim(),
+                    maskedTextBox4.Text.Trim(),
                     Convert.ToString(comboBox1.SelectedValue),
-                    cost, price, stock);
+                    cost,
+                    price,
+                    stock,
+                    GetExpiry()                 // saves the expiry date
+                );
 
                 LoadProducts();
                 StartNew();
 
-                MessageBox.Show("Product saved.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Product saved successfully!", "Success",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (MySqlException ex)
             {
                 ShowSaveError(ex);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Save Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -320,7 +386,7 @@ namespace inventory_management_system_with_POS
         {
             if (_isNew || string.IsNullOrWhiteSpace(maskedTextBox1.Text))
             {
-                MessageBox.Show("Select a product in the list first.", "Update",
+                MessageBox.Show("Please select a product first.", "Update",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
@@ -329,27 +395,33 @@ namespace inventory_management_system_with_POS
             int stock;
 
             if (!ReadForm(out cost, out price, out stock))
-            {
                 return;
-            }
 
             try
             {
                 InventoryData.UpdateProduct(
                     maskedTextBox1.Text.Trim(),
-                    maskedTextBox2.Text,
-                    maskedTextBox4.Text,
+                    maskedTextBox2.Text.Trim(),
+                    maskedTextBox4.Text.Trim(),
                     Convert.ToString(comboBox1.SelectedValue),
-                    cost, price);
+                    cost,
+                    price,
+                    GetExpiry()                 // saves the expiry date
+                );
 
                 LoadProducts();
                 StartNew();
 
-                MessageBox.Show("Product updated.", "Success", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Product updated successfully!", "Success",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (MySqlException ex)
             {
                 ShowSaveError(ex);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Update Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 

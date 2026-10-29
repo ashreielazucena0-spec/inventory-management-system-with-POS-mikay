@@ -13,15 +13,20 @@ namespace inventory_management_system_with_POS
     // first and never sells an expired batch, so expired stock stays on the
     // shelf (and in the stock count) until it is written off here.
     //
+    // Stock that has no batch but belongs to a product with an expiry date
+    // (set in Manage Product) is listed too.
+    //
     //   Write off selected : stock OUT, reason "Expired", same batch/expiry
     //   Write off all expired : the same for every already-expired batch
     //
-    // Row colours: red = expired, orange = expires within 7 days.
+    // Row colours: red = expired, yellow = expires within 7 days.
     // ==========================================================
     public partial class frmExpireditem : frmReportBase
     {
         private readonly ComboBox _cmbShow;
-        private readonly int[] _days = new int[] { -1, 7, 30, 60, 90 };
+
+        // 36500 days = "all with an expiry date".
+        private readonly int[] _days = new int[] { -1, 7, 30, 60, 90, 36500 };
 
         public frmExpireditem() : base("EXPIRED ITEMS MANAGER", "expired_items", false)
         {
@@ -36,15 +41,21 @@ namespace inventory_management_system_with_POS
                 "Expired + expiring in 7 days",
                 "Expired + expiring in 30 days",
                 "Expired + expiring in 60 days",
-                "Expired + expiring in 90 days"
+                "Expired + expiring in 90 days",
+                "All with an expiry date"
             });
-            _cmbShow.SelectedIndex = 0;
+            _cmbShow.SelectedIndex = 5;
             AddFilter("Show:", _cmbShow);
 
             AddButton("Write off selected", btnWriteOffSelected_Click);
             AddButton("Write off all expired", btnWriteOffAll_Click);
 
             Grid.DataBindingComplete += Grid_DataBindingComplete;
+        }
+
+        // Harmless: only needed if the designer ever adds the Load line back.
+        private void frmExpireditem_Load(object sender, EventArgs e)
+        {
         }
 
         protected override void LoadData()
@@ -113,9 +124,15 @@ namespace inventory_management_system_with_POS
         }
 
         // Stock OUT for the whole remaining quantity of one batch.
+        // Stock without a batch is written off without an expiry date, so it is
+        // deducted from the product's untracked stock and leaves the list.
         private static void WriteOff(DataRow r)
         {
             string batch = r["batch_no"] == DBNull.Value ? null : Convert.ToString(r["batch_no"]);
+
+            DateTime? expiry = batch == null
+                ? (DateTime?)null
+                : Convert.ToDateTime(r["expiry_date"]);
 
             InventoryData.AddMovement(
                 Convert.ToString(r["product_id"]),
@@ -123,7 +140,7 @@ namespace inventory_management_system_with_POS
                 "Expired",
                 Int(r["remaining"]),
                 batch,
-                Convert.ToDateTime(r["expiry_date"]),
+                expiry,
                 null,
                 null,
                 "Expired write-off");

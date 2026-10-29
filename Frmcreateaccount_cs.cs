@@ -16,10 +16,11 @@ namespace inventory_management_system_with_POS
         }
 
         private bool _editMode;
+        public string AccId { get; set; }
 
         /// <summary>
         /// False = create a new account (INSERT).
-        /// True  = edit the account whose ID is in txtAccID (UPDATE).
+        /// True  = edit the account whose ID is in AccId (UPDATE).
         ///         The ID cannot be changed, and a blank password keeps the current one.
         /// </summary>
         public bool EditMode
@@ -28,7 +29,6 @@ namespace inventory_management_system_with_POS
             set
             {
                 _editMode = value;
-                txtAccID.ReadOnly = value;
                 button1.Text = value ? "Update" : "Save";
 
                 ToolTip tip = new ToolTip();
@@ -36,7 +36,7 @@ namespace inventory_management_system_with_POS
                     textPassword,
                     value
                         ? "Leave blank to keep the current password."
-                        : "At least " + PasswordHasher.MinimumLength + " characters.");
+                        : "Enter a password.");
             }
         }
 
@@ -99,7 +99,6 @@ namespace inventory_management_system_with_POS
         {
             if (!_editMode)
             {
-                txtAccID.Clear();
             }
 
             txtAccName.Clear();
@@ -119,7 +118,6 @@ namespace inventory_management_system_with_POS
             }
             else
             {
-                txtAccID.Focus();
             }
         }
 
@@ -128,15 +126,14 @@ namespace inventory_management_system_with_POS
             object sender,
             EventArgs e)
         {
-            string accId = txtAccID.Text.Trim();
+            string accId = this.AccId ?? string.Empty;
             string accName = txtAccName.Text.Trim();
             string accType = cbAccountType.Text.Trim();
             string username = textUsername.Text.Trim();
-            string password = textPassword.Text;
+            string password = textPassword.Text.Trim();
 
             // CHECK REQUIRED FIELDS (password may stay blank when editing)
-            if (accId.Length == 0 ||
-                accName.Length == 0 ||
+            if (accName.Length == 0 ||
                 accType.Length == 0 ||
                 username.Length == 0 ||
                 (!_editMode && string.IsNullOrWhiteSpace(password)))
@@ -151,20 +148,8 @@ namespace inventory_management_system_with_POS
                 return;
             }
 
+            // When editing, a blank password means "keep the current one".
             bool changePassword = !string.IsNullOrEmpty(password);
-
-            if (changePassword && password.Length < PasswordHasher.MinimumLength)
-            {
-                MessageBox.Show(
-                    "The password must be at least " + PasswordHasher.MinimumLength + " characters long.",
-                    "Weak Password",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning
-                );
-
-                textPassword.Focus();
-                return;
-            }
 
             try
             {
@@ -177,7 +162,7 @@ namespace inventory_management_system_with_POS
                 }
 
                 // DUPLICATE CHECKS
-                if (!_editMode && Exists("SELECT COUNT(*) FROM tbl_account WHERE acc_id = @id", "@id", accId))
+                if (!_editMode && !string.IsNullOrEmpty(accId) && Exists("SELECT COUNT(*) FROM tbl_account WHERE acc_id = @id", "@id", accId))
                 {
                     MessageBox.Show(
                         "That account ID is already in use.",
@@ -186,7 +171,7 @@ namespace inventory_management_system_with_POS
                         MessageBoxIcon.Warning
                     );
 
-                    txtAccID.Focus();
+                    //txtAccID.Focus();
                     return;
                 }
 
@@ -226,10 +211,10 @@ namespace inventory_management_system_with_POS
                 }
                 else
                 {
+                    // When creating a new account the acc_id is generated automatically.
                     sql = @"
                         INSERT INTO tbl_account
                         (
-                            acc_id,
                             acc_name,
                             acc_type,
                             user_name,
@@ -237,7 +222,6 @@ namespace inventory_management_system_with_POS
                         )
                         VALUES
                         (
-                            @acc_id,
                             @acc_name,
                             @acc_type,
                             @user_name,
@@ -248,7 +232,10 @@ namespace inventory_management_system_with_POS
                 using (MySqlCommand cmd =
                        new MySqlCommand(sql, _db.conn))
                 {
-                    cmd.Parameters.AddWithValue("@acc_id", accId);
+                    if (_editMode)
+                    {
+                        cmd.Parameters.AddWithValue("@acc_id", accId);
+                    }
                     cmd.Parameters.AddWithValue("@acc_name", accName);
                     cmd.Parameters.AddWithValue("@acc_type", accType);
                     cmd.Parameters.AddWithValue("@user_name", username);
@@ -359,6 +346,11 @@ namespace inventory_management_system_with_POS
         }
 
         private void b(object sender, EventArgs e)
+        {
+
+        }
+
+        private void Frmcreateaccount_cs_Load(object sender, EventArgs e)
         {
 
         }

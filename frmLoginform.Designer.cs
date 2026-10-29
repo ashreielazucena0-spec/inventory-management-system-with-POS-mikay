@@ -61,7 +61,7 @@
             this.toolStripLabel1});
             this.toolStrip1.Location = new System.Drawing.Point(0, 0);
             this.toolStrip1.Name = "toolStrip1";
-            this.toolStrip1.Size = new System.Drawing.Size(437, 31);
+            this.toolStrip1.Size = new System.Drawing.Size(591, 31);
             this.toolStrip1.TabIndex = 0;
             this.toolStrip1.Text = "toolStrip1";
             // 
@@ -87,52 +87,53 @@
             // 
             // label1
             // 
-            this.label1.AutoSize = true;
-            this.label1.Location = new System.Drawing.Point(174, 196);
-            this.label1.Name = "label1";
             this.label1.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.label1.AutoSize = true;
+            this.label1.Location = new System.Drawing.Point(251, 216);
+            this.label1.Name = "label1";
             this.label1.Size = new System.Drawing.Size(0, 23);
             this.label1.TabIndex = 2;
             // 
             // label2
             // 
-            this.label2.AutoSize = true;
-            this.label2.Font = new System.Drawing.Font("Microsoft Tai Le", 12F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.label2.Location = new System.Drawing.Point(197, 46);
-            this.label2.Name = "label2";
             this.label2.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.label2.Size = new System.Drawing.Size(220, 26);
+            this.label2.AutoSize = true;
+            this.label2.Font = new System.Drawing.Font("Microsoft Tai Le", 13.8F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.label2.Location = new System.Drawing.Point(263, 73);
+            this.label2.Name = "label2";
+            this.label2.Size = new System.Drawing.Size(249, 29);
             this.label2.TabIndex = 3;
             this.label2.Text = "Login to your account";
             this.label2.Click += new System.EventHandler(this.label2_Click_1);
             // 
             // label3
             // 
-            this.label3.AutoSize = true;
-            this.label3.Location = new System.Drawing.Point(188, 85);
-            this.label3.Name = "label3";
             this.label3.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.label3.Size = new System.Drawing.Size(93, 23);
+            this.label3.AutoSize = true;
+            this.label3.Font = new System.Drawing.Font("Microsoft Tai Le", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.label3.Location = new System.Drawing.Point(264, 129);
+            this.label3.Name = "label3";
+            this.label3.Size = new System.Drawing.Size(96, 25);
             this.label3.TabIndex = 4;
             this.label3.Text = "username";
             this.label3.Click += new System.EventHandler(this.label3_Click);
             // 
             // label4
             // 
-            this.label4.AutoSize = true;
-            this.label4.Location = new System.Drawing.Point(188, 157);
-            this.label4.Name = "label4";
             this.label4.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.label4.AutoSize = true;
+            this.label4.Location = new System.Drawing.Point(265, 187);
+            this.label4.Name = "label4";
             this.label4.Size = new System.Drawing.Size(90, 23);
             this.label4.TabIndex = 6;
             this.label4.Text = "password";
             // 
             // checkBox1
             // 
-            this.checkBox1.AutoSize = true;
-            this.checkBox1.Location = new System.Drawing.Point(191, 218);
-            this.checkBox1.Name = "checkBox1";
             this.checkBox1.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.checkBox1.AutoSize = true;
+            this.checkBox1.Location = new System.Drawing.Point(269, 253);
+            this.checkBox1.Name = "checkBox1";
             this.checkBox1.Size = new System.Drawing.Size(163, 27);
             this.checkBox1.TabIndex = 10;
             this.checkBox1.Text = "Show password";
@@ -141,11 +142,11 @@
             // 
             // button3
             // 
+            this.button3.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.button3.BackColor = System.Drawing.Color.PaleGreen;
             this.button3.ForeColor = System.Drawing.SystemColors.ActiveCaptionText;
-            this.button3.Location = new System.Drawing.Point(192, 261);
+            this.button3.Location = new System.Drawing.Point(268, 286);
             this.button3.Name = "button3";
-            this.button3.Anchor = System.Windows.Forms.AnchorStyles.None;
             this.button3.Size = new System.Drawing.Size(91, 29);
             this.button3.TabIndex = 11;
             this.button3.Text = "Login\r\n";
@@ -154,10 +155,10 @@
             // 
             // button5
             // 
-            this.button5.BackColor = System.Drawing.Color.LightCoral;
-            this.button5.Location = new System.Drawing.Point(313, 261);
-            this.button5.Name = "button5";
             this.button5.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.button5.BackColor = System.Drawing.Color.LightCoral;
+            this.button5.Location = new System.Drawing.Point(390, 286);
+            this.button5.Name = "button5";
             this.button5.Size = new System.Drawing.Size(96, 29);
             this.button5.TabIndex = 13;
             this.button5.Text = "Clear";
@@ -177,6 +178,8 @@
             // 
             // panel1
             // 
+            this.panel1.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) 
+            | System.Windows.Forms.AnchorStyles.Left)));
             this.panel1.BackColor = System.Drawing.Color.LightSkyBlue;
             this.panel1.Controls.Add(this.label6);
             this.panel1.Controls.Add(this.label5);
@@ -184,8 +187,7 @@
             this.panel1.ForeColor = System.Drawing.SystemColors.MenuText;
             this.panel1.Location = new System.Drawing.Point(0, 28);
             this.panel1.Name = "panel1";
-            this.panel1.Anchor = System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom | System.Windows.Forms.AnchorStyles.Left;
-            this.panel1.Size = new System.Drawing.Size(168, 364);
+            this.panel1.Size = new System.Drawing.Size(224, 405);
             this.panel1.TabIndex = 7;
             // 
             // label6
@@ -193,9 +195,9 @@
             this.label6.AutoSize = true;
             this.label6.Location = new System.Drawing.Point(3, 282);
             this.label6.Name = "label6";
-            this.label6.Size = new System.Drawing.Size(204, 46);
+            this.label6.Size = new System.Drawing.Size(148, 69);
             this.label6.TabIndex = 3;
-            this.label6.Text = "Developed by\r\n[Enter your name here]";
+            this.label6.Text = "Developed by\r\nJermie Capadiso\r\n\r\n";
             // 
             // label5
             // 
@@ -209,20 +211,20 @@
             // 
             // label7
             // 
-            this.label7.AutoSize = true;
-            this.label7.Location = new System.Drawing.Point(169, 329);
-            this.label7.Name = "label7";
             this.label7.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.label7.AutoSize = true;
+            this.label7.Location = new System.Drawing.Point(264, 360);
+            this.label7.Name = "label7";
             this.label7.Size = new System.Drawing.Size(208, 23);
             this.label7.TabIndex = 14;
             this.label7.Text = "Dont have an account? ";
             // 
             // linkLabel1
             // 
-            this.linkLabel1.AutoSize = true;
-            this.linkLabel1.Location = new System.Drawing.Point(327, 329);
-            this.linkLabel1.Name = "linkLabel1";
             this.linkLabel1.Anchor = System.Windows.Forms.AnchorStyles.None;
+            this.linkLabel1.AutoSize = true;
+            this.linkLabel1.Location = new System.Drawing.Point(479, 360);
+            this.linkLabel1.Name = "linkLabel1";
             this.linkLabel1.Size = new System.Drawing.Size(76, 23);
             this.linkLabel1.TabIndex = 15;
             this.linkLabel1.TabStop = true;
@@ -231,19 +233,19 @@
             // 
             // textUsername
             // 
-            this.textUsername.Location = new System.Drawing.Point(192, 127);
-            this.textUsername.Name = "textUsername";
             this.textUsername.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.textUsername.Size = new System.Drawing.Size(158, 31);
+            this.textUsername.Location = new System.Drawing.Point(268, 153);
+            this.textUsername.Name = "textUsername";
+            this.textUsername.Size = new System.Drawing.Size(217, 31);
             this.textUsername.TabIndex = 16;
             this.textUsername.TextChanged += new System.EventHandler(this.textBox1_TextChanged);
             // 
             // textPassword
             // 
-            this.textPassword.Location = new System.Drawing.Point(192, 185);
-            this.textPassword.Name = "textPassword";
             this.textPassword.Anchor = System.Windows.Forms.AnchorStyles.None;
-            this.textPassword.Size = new System.Drawing.Size(158, 31);
+            this.textPassword.Location = new System.Drawing.Point(268, 213);
+            this.textPassword.Name = "textPassword";
+            this.textPassword.Size = new System.Drawing.Size(217, 31);
             this.textPassword.TabIndex = 17;
             this.textPassword.TextChanged += new System.EventHandler(this.checkBox1_CheckedChanged);
             // 
@@ -251,7 +253,7 @@
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(11F, 23F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(437, 392);
+            this.ClientSize = new System.Drawing.Size(591, 433);
             this.ControlBox = false;
             this.Controls.Add(this.textPassword);
             this.Controls.Add(this.textUsername);
@@ -268,11 +270,10 @@
             this.Controls.Add(this.toolStrip1);
             this.Font = new System.Drawing.Font("Microsoft Tai Le", 11.25F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.ForeColor = System.Drawing.SystemColors.ActiveCaptionText;
-            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.Sizable;
             this.Margin = new System.Windows.Forms.Padding(4);
-            this.WindowState = System.Windows.Forms.FormWindowState.Maximized;
             this.Name = "frmLoginform";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
+            this.WindowState = System.Windows.Forms.FormWindowState.Maximized;
             this.Load += new System.EventHandler(this.frmLoginform_Load);
             this.toolStrip1.ResumeLayout(false);
             this.toolStrip1.PerformLayout();

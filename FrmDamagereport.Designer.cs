@@ -25,8 +25,14 @@ namespace inventory_management_system_with_POS
             // 
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.None;
             this.ClientSize = new System.Drawing.Size(1100, 640);
+            this.Cursor = System.Windows.Forms.Cursors.Default;
+            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.None;
             this.Name = "FrmDamagereport";
             this.Text = "Damage Report";
+            this.Controls.SetChildIndex(this.FilterBar, 0);
+            this.Controls.SetChildIndex(this.SummaryLabel, 0);
+            this.Controls.SetChildIndex(this.ButtonBar, 0);
+            this.Controls.SetChildIndex(this.Grid, 0);
             this.ResumeLayout(false);
 
         }
